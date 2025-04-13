@@ -1,0 +1,5 @@
+ursina (for the game engine/graphics)
+tensorflow | pytorch (for the ML backend)
+stable-baselines3 | tf-agents (or similar RL library)
+numpy (for numerical operations)
+gymnasium (optional, for structuring the RL environment separately)
