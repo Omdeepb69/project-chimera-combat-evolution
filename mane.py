@@ -6,6 +6,10 @@ import numpy as np
 from collections import deque
 
 app = Ursina()
+window.title = "Adaptive FPS Game"
+window.borderless = False
+window.fullscreen = False
+window.exit_button.visible = False
 
 # Global game settings
 GAME_MAP_SIZE = 30
@@ -19,6 +23,8 @@ enemy_spawn_positions = []
 player_spawn_position = Vec3(0, 1, 0)
 bullets = []
 hit_markers = []
+walls = []
+enemies = []
 
 # Texture and sound assets
 gun_model = None
@@ -35,6 +41,419 @@ floor_texture = load_texture('grass')  # Will use default white texture if not f
 shoot_sound = None
 hit_sound = None
 reload_sound = None
+
+# UI Elements
+game_title = Text(text="ADAPTIVE FPS", origin=(0, 0), scale=3, color=color.gold)
+game_title.x = 0
+game_title.y = 0.3
+
+round_text = Text(text=f"ROUND 1/{MAX_ROUNDS}", origin=(0, 0), scale=2, color=color.white)
+round_text.x = 0
+round_text.y = 0.1
+
+start_button = Button(text="Start Game", scale=(0.3, 0.1), color=color.azure)
+start_button.y = -0.1
+
+quit_button = Button(text="Quit", scale=(0.3, 0.1), color=color.red)
+quit_button.y = -0.3
+
+game_ui = Entity(parent=camera.ui)
+game_ui.enabled = True
+
+# Map generation functions
+def generate_map():
+    """Generate a procedural map with walls and obstacles"""
+    global walls, enemy_spawn_positions, player_spawn_position
+    
+    # Clear previous map
+    for wall in walls:
+        destroy(wall)
+    walls = []
+    enemy_spawn_positions = []
+    
+    # Create floor
+    floor = Entity(model='plane', scale=GAME_MAP_SIZE, texture=floor_texture, 
+                  texture_scale=(GAME_MAP_SIZE/2, GAME_MAP_SIZE/2), collider='box')
+    walls.append(floor)
+    
+    # Create boundary walls
+    boundary_size = GAME_MAP_SIZE / 2
+    
+    # North wall
+    north = Entity(model='cube', color=color.gray, 
+                  scale=(GAME_MAP_SIZE, WALL_HEIGHT, 1),
+                  position=(0, WALL_HEIGHT/2, -boundary_size),
+                  texture=wall_texture, collider='box')
+    walls.append(north)
+    
+    # South wall
+    south = Entity(model='cube', color=color.gray, 
+                  scale=(GAME_MAP_SIZE, WALL_HEIGHT, 1),
+                  position=(0, WALL_HEIGHT/2, boundary_size),
+                  texture=wall_texture, collider='box')
+    walls.append(south)
+    
+    # East wall
+    east = Entity(model='cube', color=color.gray, 
+                 scale=(1, WALL_HEIGHT, GAME_MAP_SIZE),
+                 position=(boundary_size, WALL_HEIGHT/2, 0),
+                 texture=wall_texture, collider='box')
+    walls.append(east)
+    
+    # West wall
+    west = Entity(model='cube', color=color.gray, 
+                 scale=(1, WALL_HEIGHT, GAME_MAP_SIZE),
+                 position=(-boundary_size, WALL_HEIGHT/2, 0),
+                 texture=wall_texture, collider='box')
+    walls.append(west)
+    
+    # Generate random interior walls
+    num_structures = random.randint(5, 10)
+    
+    for _ in range(num_structures):
+        generate_structure()
+    
+    # Set player spawn position
+    player_spawn_position = Vec3(random.uniform(-boundary_size + 5, boundary_size - 5), 1, 
+                               random.uniform(-boundary_size + 5, boundary_size - 5))
+    
+    # Generate some spawn positions for enemies
+    for _ in range(8):
+        pos = Vec3(
+            random.uniform(-boundary_size + 5, boundary_size - 5),
+            1,
+            random.uniform(-boundary_size + 5, boundary_size - 5)
+        )
+        
+        # Ensure spawn positions are not too close to player
+        while (pos - player_spawn_position).length() < 10:
+            pos = Vec3(
+                random.uniform(-boundary_size + 5, boundary_size - 5),
+                1,
+                random.uniform(-boundary_size + 5, boundary_size - 5)
+            )
+            
+        enemy_spawn_positions.append(pos)
+
+def generate_structure():
+    """Generate a random structure in the map"""
+    structure_type = random.choice(['building', 'barricade', 'tower', 'cross'])
+    boundary = GAME_MAP_SIZE / 2 - 3  # Keep away from map edges
+    
+    # Random position within map boundaries
+    pos_x = random.uniform(-boundary, boundary)
+    pos_z = random.uniform(-boundary, boundary)
+    
+    if structure_type == 'building':
+        # Create a small building with walls
+        width = random.uniform(3, 6)
+        depth = random.uniform(3, 6)
+        height = random.uniform(2, 4)
+        
+        # Four walls
+        for wall_data in [
+            # North wall
+            {'scale': (width, height, 0.5), 'pos': (0, height/2, -depth/2)},
+            # South wall
+            {'scale': (width, height, 0.5), 'pos': (0, height/2, depth/2)},
+            # East wall
+            {'scale': (0.5, height, depth), 'pos': (width/2, height/2, 0)},
+            # West wall
+            {'scale': (0.5, height, depth), 'pos': (-width/2, height/2, 0)}
+        ]:
+            wall = Entity(
+                model='cube',
+                color=color.light_gray,
+                texture=wall_texture,
+                scale=wall_data['scale'],
+                position=(pos_x + wall_data['pos'][0], wall_data['pos'][1], pos_z + wall_data['pos'][2]),
+                collider='box'
+            )
+            walls.append(wall)
+            
+        # Maybe add a roof
+        if random.random() < 0.5:
+            roof = Entity(
+                model='cube',
+                color=color.dark_gray,
+                texture=wall_texture,
+                scale=(width, 0.5, depth),
+                position=(pos_x, height + 0.25, pos_z),
+                collider='box'
+            )
+            walls.append(roof)
+            
+        # Maybe add doorways/windows
+        if random.random() < 0.7:
+            # Choose a random wall to put a door in
+            door_wall = random.randint(0, 3)
+            if door_wall == 0:  # North
+                door = Entity(
+                    model='cube',
+                    scale=(1.5, 2, 0.5),
+                    position=(pos_x, 1, pos_z - depth/2),
+                    color=color.rgba(0, 0, 0, 0),  # Invisible
+                )
+            elif door_wall == 1:  # South
+                door = Entity(
+                    model='cube',
+                    scale=(1.5, 2, 0.5),
+                    position=(pos_x, 1, pos_z + depth/2),
+                    color=color.rgba(0, 0, 0, 0),  # Invisible
+                )
+            elif door_wall == 2:  # East
+                door = Entity(
+                    model='cube',
+                    scale=(0.5, 2, 1.5),
+                    position=(pos_x + width/2, 1, pos_z),
+                    color=color.rgba(0, 0, 0, 0),  # Invisible
+                )
+            else:  # West
+                door = Entity(
+                    model='cube',
+                    scale=(0.5, 2, 1.5),
+                    position=(pos_x - width/2, 1, pos_z),
+                    color=color.rgba(0, 0, 0, 0),  # Invisible
+                )
+                
+    elif structure_type == 'barricade':
+        # Create a barricade formation
+        width = random.uniform(4, 8)
+        height = random.uniform(1, 2)
+        
+        for i in range(3):
+            offset = (i - 1) * width/3
+            barricade = Entity(
+                model='cube',
+                color=color.brown,
+                texture=wall_texture,
+                scale=(width/4, height, 1),
+                position=(pos_x + offset, height/2, pos_z),
+                rotation=(0, random.uniform(-15, 15), 0),
+                collider='box'
+            )
+            walls.append(barricade)
+            
+    elif structure_type == 'tower':
+        # Create a tall tower
+        width = random.uniform(2, 4)
+        height = random.uniform(5, 8)
+        
+        tower = Entity(
+            model='cube',
+            color=color.dark_gray,
+            texture=wall_texture,
+            scale=(width, height, width),
+            position=(pos_x, height/2, pos_z),
+            collider='box'
+        )
+        walls.append(tower)
+        
+        # Add a platform on top
+        platform = Entity(
+            model='cube',
+            color=color.gray,
+            texture=wall_texture,
+            scale=(width+1, 0.5, width+1),
+            position=(pos_x, height + 0.25, pos_z),
+            collider='box'
+        )
+        walls.append(platform)
+        
+    elif structure_type == 'cross':
+        # Create a cross-shaped structure
+        width = random.uniform(1.5, 3)
+        length = random.uniform(6, 10)
+        height = random.uniform(1, 3)
+        
+        # Horizontal part
+        horizontal = Entity(
+            model='cube',
+            color=color.light_gray,
+            texture=wall_texture,
+            scale=(length, height, width),
+            position=(pos_x, height/2, pos_z),
+            collider='box'
+        )
+        walls.append(horizontal)
+        
+        # Vertical part
+        vertical = Entity(
+            model='cube',
+            color=color.light_gray,
+            texture=wall_texture,
+            scale=(width, height, length),
+            position=(pos_x, height/2, pos_z),
+            collider='box'
+        )
+        walls.append(vertical)
+
+# Game control functions
+def start_game():
+    """Start the game"""
+    global game_ui, player, round_in_progress, enemies, current_round
+    
+    game_ui.enabled = False
+    mouse.locked = True
+    
+    # Generate map
+    generate_map()
+    
+    # Create player
+    player = FPSPlayer(position=player_spawn_position)
+    
+    # Create enemies
+    spawn_enemies()
+    
+    # Start the round
+    round_in_progress = True
+    current_round = 1
+    
+    # Reset stats
+    player_stats['kills'] = 0
+    player_stats['deaths'] = 0
+    player_stats['shots_fired'] = 0
+    player_stats['shots_hit'] = 0
+    player_stats['accuracy'] = 0
+    
+    # Set up round end check
+    invoke(check_round_status, delay=1)
+
+def end_game():
+    """End the game and return to menu"""
+    global game_ui, player, round_in_progress, enemies
+    
+    # Clean up
+    for enemy in enemies:
+        destroy(enemy)
+    enemies = []
+    
+    if player:
+        destroy(player)
+    
+    # Show menu
+    game_ui.enabled = True
+    round_in_progress = False
+    mouse.locked = False
+
+def spawn_enemies():
+    """Spawn enemies at the start of a round"""
+    global enemies
+    
+    # Clear previous enemies
+    for enemy in enemies:
+        destroy(enemy)
+    enemies = []
+    
+    # Create new enemies
+    for i in range(4):
+        if i < len(enemy_spawn_positions):
+            enemy = AdaptiveNPC(position=enemy_spawn_positions[i], team_id=i % 2 + 1)
+            enemies.append(enemy)
+
+def check_round_status():
+    """Check if the round is over"""
+    global round_in_progress, current_round
+    
+    if not round_in_progress:
+        return
+    
+    # Count alive enemies
+    alive_enemies = sum(1 for enemy in enemies if enemy.alive)
+    
+    if alive_enemies == 0:
+        # Round over - all enemies dead
+        round_in_progress = False
+        
+        # Show round end message
+        if current_round < MAX_ROUNDS:
+            player.message_text.text = f"Round {current_round} complete!\nNext round starting soon..."
+            player.message_text.visible = True
+            invoke(setattr, player.message_text, 'visible', False, delay=3)
+            
+            # Start next round
+            current_round += 1
+            invoke(start_next_round, delay=4)
+        else:
+            # Game over - all rounds complete
+            player.message_text.text = "Game complete!\nReturning to menu..."
+            player.message_text.visible = True
+            invoke(end_game, delay=5)
+    else:
+        # Continue checking
+        invoke(check_round_status, delay=1)
+
+def start_next_round():
+    """Start the next round"""
+    global round_in_progress
+    
+    # Update round text
+    player.stats_text.text = f'Kills: {player_stats["kills"]} | Deaths: {player_stats["deaths"]}\nAccuracy: {player_stats["accuracy"]:.1f}%\nRound: {current_round}/{MAX_ROUNDS}'
+    
+    # Show round start message
+    player.message_text.text = f"Round {current_round} starting!"
+    player.message_text.visible = True
+    invoke(setattr, player.message_text, 'visible', False, delay=2)
+    
+    # Generate new map
+    generate_map()
+    
+    # Move player to spawn
+    player.position = player_spawn_position
+    
+    # Spawn enemies with increased difficulty
+    spawn_enemies()
+    
+    # Adjust enemy difficulty based on round
+    for enemy in enemies:
+        # Increase health
+        enemy.max_health = 100 + (current_round - 1) * 20
+        enemy.health = enemy.max_health
+        
+        # Improve accuracy
+        enemy.accuracy = min(0.9, enemy.accuracy + 0.05 * (current_round - 1))
+        
+        # Decrease reaction time
+        enemy.reaction_time = max(0.3, enemy.reaction_time - 0.1 * (current_round - 1))
+    
+    round_in_progress = True
+    
+    # Set up round end check
+    invoke(check_round_status, delay=1)
+
+# Button events
+def start_button_click():
+    start_game()
+
+def quit_button_click():
+    application.quit()
+
+start_button.on_click = start_button_click
+quit_button.on_click = quit_button_click
+
+# Game input handling
+def input(key):
+    if key == 'escape':
+        if not game_ui.enabled:
+            # Return to menu
+            end_game()
+    
+    if key == 'tab' and player and round_in_progress:
+        # Show detailed stats when tab is pressed
+        player.message_text.text = f"Kills: {player_stats['kills']}\nDeaths: {player_stats['deaths']}\nAccuracy: {player_stats['accuracy']:.1f}%\nRound: {current_round}/{MAX_ROUNDS}"
+        player.message_text.visible = True
+    
+    if key == 'tab up' and player:
+        # Hide stats when tab is released
+        player.message_text.visible = False
+
+# Main update function
+def update():
+    # Handle any global game logic here
+    pass
+
+# Start the game
+app.run()
 
 # Weapon class
 class Weapon:
@@ -542,6 +961,30 @@ class AdaptiveNPC(Entity):
             
         self.alive = False
         self.death_time = time.time()
+        player_stats['deaths'] += 1
+        
+        # Death effect
+        camera.animate_position(self.position + Vec3(0, 5, 0), duration=2)
+        camera.animate_rotation(Vec3(90, 0, 0), duration=2)
+        
+        # Death message
+        self.message_text.text = "You died! Respawning..."
+        self.message_text.visible = True
+        invoke(setattr, self.message_text, 'visible', False, delay=2)
+    
+    def respawn(self):
+        self.alive = True
+        self.health = self.max_health
+        self.position = player_spawn_position
+        
+        # Reset camera
+        camera.position = self.position + Vec3(0, 2, 0)
+        camera.rotation = Vec3(0, 0, 0)
+        
+        # Respawn message
+        self.message_text.text = "Respawned!"
+        self.message_text.visible = True
+        invoke(setattr, self.message_text, 'visible', False, delay=2)
         self.visible = False
         self.collider = None
         
