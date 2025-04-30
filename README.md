@@ -43,7 +43,7 @@ Done. Next.
 
 ## USAGE
 
-Just run the main Python script. Boom. 💥 If you wanna tinker (go on, I know you do), check `config.json`.
+Just run the mane.py Python script. Boom. 💥 If you wanna tinker (go on, I know you do), check `config.json`.
 
 ## PROJECT STRUCTURE
 
